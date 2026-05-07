@@ -21,6 +21,7 @@ crypto libraries.
 
 ## Project Structure
 
+```
 embedded-crypto-bootloader/
 ├── crypto/
 │   ├── aes.c / aes.h        # AES-128 ECB and CBC from scratch
@@ -34,6 +35,7 @@ embedded-crypto-bootloader/
 ├── main.c                   # Demo: sign, verify, boot or reject
 ├── Makefile
 └── README.md
+```
 
 ---
 
@@ -72,6 +74,7 @@ make
 
 ## Secure Boot Chain of Trust
 
+```
 ┌─────────────────────────────────────────────┐
 │              SECURE BOOTLOADER              │
 │                                             │
@@ -82,13 +85,14 @@ make
 │  5. Check passkey access control            │
 │  6. BOOT (pass) or HALT (fail)              │
 └─────────────────────────────────────────────┘
+```
 
 ---
 
 ## Security Concepts Covered
 
 | Concept                        | Implementation                    |
-|-------------------------------|-----------------------------------|
+|------------------------------- |-----------------------------------|
 | Symmetric encryption           | AES-128 ECB/CBC                   |
 | Asymmetric signing/verification| ECDSA secp256k1                   |
 | Integrity verification         | SHA-256 hash comparison           |
@@ -118,11 +122,11 @@ embedded security controllers.
 ## Roadmap
 
 - [x] AES-128 ECB/CBC
-- [ ] SHA-256
-- [ ] ECDSA signature verification
-- [ ] Secure bootloader chain of trust
-- [ ] Passkey access control
-- [ ] Known-answer tests (KAT)
+- [x] SHA-256
+- [x] ECDSA signature verification
+- [x] Secure bootloader chain of trust
+- [x] Passkey access control
+- [x] Known-answer tests (KAT) — 20/20 passing
 
 ---
 
