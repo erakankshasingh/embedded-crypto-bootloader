@@ -1,0 +1,9 @@
+# Compiled binaries
+bootloader_demo
+test_crypto
+
+# Object files
+*.o
+
+# Dependency files
+*.d
