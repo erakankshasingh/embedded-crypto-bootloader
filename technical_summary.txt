@@ -1,0 +1,257 @@
+================================================================================
+TECHNICAL SUMMARY
+Embedded Crypto & Secure Bootloader
+================================================================================
+
+Project     : Embedded Crypto & Secure Bootloader
+Language    : C (C99)
+Platform    : ARM Cortex-M (simulated on POSIX/macOS/Linux)
+Dependencies: None (standard C library only)
+Build       : gcc / make
+
+--------------------------------------------------------------------------------
+1. PURPOSE
+--------------------------------------------------------------------------------
+
+This project implements three cryptographic primitives from scratch — AES-128,
+SHA-256, and ECDSA — and integrates them into a secure bootloader that enforces
+a hardware-style chain of trust before allowing firmware to execute.
+
+The design reflects real constraints of embedded security controllers: no heap
+allocation, no external libraries, portable C99, and a minimal memory footprint.
+
+--------------------------------------------------------------------------------
+2. FILE SUMMARY
+--------------------------------------------------------------------------------
+
+  main.c
+  ------
+  Entry point and demonstration driver. Simulates a 16-byte firmware image in
+  memory and runs three boot scenarios to exercise all failure paths:
+    - Scenario 1: Wrong passphrase         -> HALT (passkey fail)
+    - Scenario 2: Tampered firmware        -> HALT (hash mismatch)
+    - Scenario 3: Invalid ECDSA signature  -> HALT (signature fail)
+  Also includes standalone AES and SHA-256 demos with hex-printed output.
+
+
+  crypto/aes.c & aes.h
+  ---------------------
+  Full AES-128 implementation per NIST FIPS 197. Supports ECB and CBC modes.
+
+  Key schedule: expands a 128-bit key into 11 round keys using RotWord,
+  SubWord, and round constants (Rcon).
+
+  Round operations:
+    SubBytes      - nonlinear byte substitution via 256-entry S-Box lookup
+    ShiftRows     - cyclic row rotation for cross-column diffusion
+    MixColumns    - matrix multiply in GF(2^8) using xtime() and gf_mul()
+    AddRoundKey   - XOR state with the current round key
+
+  CBC mode XORs each plaintext block with the previous ciphertext block (or
+  the IV for the first block) before encrypting. Decryption reverses this.
+
+  Memory: stack-only. AES_ctx holds 176 bytes of round key material.
+  Reference: NIST FIPS 197.
+
+
+  crypto/sha256.c & sha256.h
+  --------------------------
+  Full SHA-256 implementation per NIST FIPS 180-4.
+
+  Compression: processes 64-byte blocks using a 64-word message schedule and
+  64 rounds of mixing with the CH, MAJ, SIG0, SIG1, sig0, sig1 operations.
+
+  Padding: appends 0x80, zero-pads to 56 bytes, appends 64-bit big-endian
+  message length (Merkle-Damgard construction).
+
+  API: both a streaming interface (init / update / final) and a one-shot
+  SHA256(data, len, digest) convenience wrapper.
+
+  SHA256_compare() performs a constant-time comparison of two 32-byte digests
+  by ORing all byte differences before returning. This prevents timing attacks
+  where an attacker could deduce a correct digest byte-by-byte by measuring
+  how long the comparison takes.
+
+  Memory: stack-only. SHA256_ctx is 104 bytes.
+  Reference: NIST FIPS 180-4.
+
+
+  crypto/ecdsa.c & ecdsa.h
+  ------------------------
+  ECDSA signature verification on the secp256k1 elliptic curve. Signing is an
+  offline operation; only verification is implemented here.
+
+  Curve: secp256k1 (used by Bitcoin). Parameters p, n, and generator point G
+  are hardcoded as public constants.
+
+  Big-integer layer: 256-bit arithmetic over GF(p) implemented directly on
+  big-endian byte arrays. Modular inverse uses Fermat's little theorem
+  (a^-1 = a^(p-2) mod p), valid because p and n are both prime.
+
+  EC point arithmetic: affine coordinates. Point addition, point doubling,
+  and scalar multiplication (double-and-add).
+
+  Verification algorithm (FIPS 186-4 Section 6.4.2):
+    1. Validate r, s are in [1, n-1]
+    2. w  = s^-1 mod n
+    3. u1 = hash * w mod n
+    4. u2 = r * w mod n
+    5. X  = u1*G + u2*Q   (two scalar multiplications, one point addition)
+    6. Accept if X.x mod n == r
+
+  Return codes: ECDSA_OK, ECDSA_ERR_INVALID, ECDSA_ERR_INFINITY.
+
+  Memory: stack-only. ECPoint structs (two 32-byte coordinates + flag) are
+  allocated on the stack during verification.
+  References: SEC 2 v2 (curve parameters), NIST FIPS 186-4.
+
+
+  bootloader/bootloader.c & bootloader.h
+  ----------------------------------------
+  Secure boot orchestrator. Chains all three security layers into a strict
+  sequential gate: a failure at any stage halts immediately.
+
+  Boot sequence enforced by BOOTLOADER_run():
+
+    Stage 1 - Passkey check
+      Checks device is not locked, then verifies the passphrase hash.
+      Failure returns BOOT_ERR_PASSKEY or BOOT_ERR_LOCKED.
+
+    Stage 2 - SHA-256 integrity
+      Hashes the firmware image and compares against the stored reference hash
+      using constant-time comparison.
+      Failure returns BOOT_ERR_HASH.
+
+    Stage 3 - ECDSA authenticity
+      Verifies the ECDSA signature over the computed firmware hash using the
+      trusted public key embedded at init time.
+      Failure returns BOOT_ERR_SIGNATURE.
+
+    All stages pass -> BOOT_OK.
+
+  Ordering rationale: passkey runs first to prevent unauthenticated parties
+  from triggering crypto operations. Hash runs before ECDSA because a simple
+  hash comparison is far cheaper than two 256-bit scalar multiplications.
+
+  BOOTLOADER_ctx holds: the trusted public key, the passkey context (with
+  lockout state), the reference firmware hash, and a flag indicating whether
+  a reference hash has been loaded.
+
+
+  bootloader/passkey.c & passkey.h
+  ---------------------------------
+  Passphrase-based access control. The passphrase is never stored in plaintext.
+  On enrollment (PASSKEY_store_hash), it is hashed with SHA-256 immediately and
+  only the 32-byte digest is retained. On verification, the input is hashed and
+  compared using the constant-time SHA256_compare().
+
+  Lockout: after PASSKEY_MAX_ATTEMPTS (3) consecutive wrong passphrases the
+  device locks and rejects all attempts, including correct ones, until
+  PASSKEY_reset() is called. This mirrors behaviour of hardware security
+  controllers (HSMs, SIM cards) that permanently lock after repeated failures.
+
+  PASSKEY_ctx holds: stored hash (32 bytes), attempt counter, locked flag.
+
+
+  tests/test_crypto.c
+  -------------------
+  Known-answer test (KAT) suite covering all modules. 20 tests total.
+  Uses NIST-published test vectors wherever available.
+
+  Test groups:
+    AES-128 ECB  - encrypt with NIST FIPS 197 vector, decrypt round-trip
+    AES-128 CBC  - encrypt with NIST SP 800-38A vector, decrypt round-trip,
+                   different keys produce different ciphertext
+    SHA-256      - NIST vectors for "abc", empty string, and a long message;
+                   avalanche effect; constant-time compare (equal and unequal)
+    Passkey      - correct accept, wrong reject, lockout after 3 failures,
+                   correct rejected while locked, re-accept after reset
+    Bootloader   - wrong passkey halts, tampered firmware halts, invalid
+                   signature halts, lockout after repeated failed boots
+
+  All 20 tests pass on a clean build. Exit code 0 on full pass, 1 on any fail.
+
+
+  Makefile
+  --------
+  Builds two executables: bootloader_demo and test_crypto.
+  Compiler: gcc, flags: -Wall -Wextra -std=c99 -O2.
+  No external libraries.
+
+  Targets:
+    make            - build both executables
+    make clean      - remove object files and executables
+
+--------------------------------------------------------------------------------
+3. BOOT SEQUENCE DATA FLOW
+--------------------------------------------------------------------------------
+
+  firmware image (in memory)
+         |
+         +---> SHA256() ---> ref_hash  (computed once at startup)
+         |
+         +---> BOOTLOADER_run(ctx, firmware, sig, passphrase)
+                    |
+                    |-- [1] PASSKEY_verify(passphrase)
+                    |         SHA256(passphrase) vs stored_hash
+                    |         fail: BOOT_ERR_PASSKEY / BOOT_ERR_LOCKED
+                    |
+                    |-- [2] SHA256(firmware) vs ref_hash
+                    |         constant-time byte comparison
+                    |         fail: BOOT_ERR_HASH
+                    |
+                    +-- [3] ECDSA_verify(pub_key, firmware_hash, sig)
+                              u1*G + u2*Q -> check X.x mod n == r
+                              fail: BOOT_ERR_SIGNATURE
+                              pass: BOOT_OK
+
+--------------------------------------------------------------------------------
+4. SECURITY PROPERTIES
+--------------------------------------------------------------------------------
+
+  Constant-time comparison
+    SHA256_compare() always evaluates all 32 bytes before returning, regardless
+    of where the first difference occurs. Used in both hash verification and
+    passkey verification to prevent timing side-channel attacks.
+
+  No plaintext passphrase storage
+    The passphrase is hashed on enrollment and the plaintext is never written
+    to persistent state. A memory dump of the device cannot directly reveal it.
+
+  Verify-only ECDSA
+    The private signing key never exists on the device. Signing happens offline.
+    A compromised device cannot forge signatures for other images.
+
+  Brute-force lockout
+    Three consecutive wrong passphrases lock the device. This prevents
+    automated passphrase guessing attacks.
+
+  Chain ordering
+    The three checks are ordered cheapest-first (passkey -> hash -> signature).
+    An unauthenticated party cannot trigger the expensive ECDSA computation
+    without first passing the passkey and integrity checks.
+
+  No heap allocation
+    All state is stack-allocated. There are no malloc() calls anywhere in
+    the codebase. This eliminates heap fragmentation and memory management
+    vulnerabilities on resource-constrained targets.
+
+--------------------------------------------------------------------------------
+5. BUILD AND RUN
+--------------------------------------------------------------------------------
+
+  Build:
+    make
+
+  Run secure boot demo:
+    ./bootloader_demo
+
+  Run test suite:
+    ./test_crypto
+
+  Expected test output:
+    Results: 20/20 passed - ALL TESTS PASSED
+
+================================================================================
+END OF DOCUMENT
+================================================================================
